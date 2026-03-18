@@ -10,6 +10,7 @@ bool Img_Decoder::isInsideMarker(int col, int row, int gridCols, int gridRows) c
     if (col < mb && row < mb) return true;
     if (col >= gridCols - mb && row < mb) return true;
     if (col < mb && row >= gridRows - mb) return true;
+    if (col >= gridCols - mb && row >= gridRows - mb) return true; // [æ–°å¢] å³ä¸‹è§’
     return false;
 }
 
@@ -18,15 +19,12 @@ bool Img_Decoder::alignAndWarpImage(const cv::Mat& inputImage, cv::Mat& outputWa
     cv::cvtColor(inputImage, gray, cv::COLOR_BGR2GRAY);
 
     auto attemptStrategy = [&](const cv::Mat& binImg) -> std::vector<cv::Point2f> {
-        // ¡¾ÎïÀíÍâ¹Ò¿ªÆô¡¿£ºĞÎÌ¬Ñ§±ÕÔËËã£¡ÀûÓÃÎÒÃÇµÄ°×É«±£»¤È¦£¬
-        // Ç¿ĞĞ°ÑÓÉÓÚÆÁÄ»·´¹â¡¢Ä¦¶ûÎÆµ¼ÖÂµÄºÚ¿éÄÚ²¿ÁÑ·ì¸ø·ìºÏÆğÀ´£¡
         cv::Mat morph;
         cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5));
         cv::morphologyEx(binImg, morph, cv::MORPH_CLOSE, kernel);
 
         std::vector<std::vector<cv::Point>> contours;
         std::vector<cv::Vec4i> hierarchy;
-        // Ñ°ÕÒÇ¶Ì×ÂÖÀª
         cv::findContours(morph, contours, hierarchy, cv::RETR_TREE, cv::CHAIN_APPROX_SIMPLE);
 
         std::vector<cv::Point2f> candidates;
@@ -34,11 +32,10 @@ bool Img_Decoder::alignAndWarpImage(const cv::Mat& inputImage, cv::Mat& outputWa
             int childIdx = hierarchy[i][2];
             if (childIdx != -1) {
                 int grandChildIdx = hierarchy[childIdx][2];
-                // Ñ°ÕÒ¾ßÓĞ¡°×æ-¸¸-Ëï¡±Èı²ã½á¹¹µÄ±ê¼Ç
                 if (grandChildIdx != -1) {
                     double area = cv::contourArea(contours[i]);
-                    // Ëæ×Å CELL_SIZE=16£¬°ĞĞÄÃæ»ı»á±ä´ó£¬·¶Î§·Å¿í
-                    if (area > 100 && area < 25000) {
+                    // é¢ç§¯é˜ˆå€¼ç¨å¾®æ”¾å®½ï¼Œåº”å¯¹æ‰‹æœºæ‹æ‘„çš„ä¸åŒè·ç¦»
+                    if (area > 50 && area < 35000) {
                         cv::Moments M = cv::moments(contours[i]);
                         if (M.m00 > 0) {
                             candidates.push_back(cv::Point2f(static_cast<float>(M.m10 / M.m00), static_cast<float>(M.m01 / M.m00)));
@@ -48,73 +45,77 @@ bool Img_Decoder::alignAndWarpImage(const cv::Mat& inputImage, cv::Mat& outputWa
             }
         }
 
-        if (candidates.size() < 3) return {};
+        if (candidates.size() < 4) return {};
 
-        double maxTriArea = -1;
-        std::vector<cv::Point2f> best3;
+        // [æ ¸å¿ƒä¼˜åŒ–] éå†æ‰€æœ‰ç»„åˆï¼Œå¯»æ‰¾æ„æˆæœ€å¤§åˆæ³•å››è¾¹å½¢çš„ 4 ä¸ªç‚¹
+        double maxQuadArea = -1;
+        std::vector<cv::Point2f> best4;
 
         for (size_t i = 0; i < candidates.size(); i++) {
             for (size_t j = i + 1; j < candidates.size(); j++) {
                 for (size_t k = j + 1; k < candidates.size(); k++) {
-                    cv::Point2f p1 = candidates[i];
-                    cv::Point2f p2 = candidates[j];
-                    cv::Point2f p3 = candidates[k];
+                    for (size_t l = k + 1; l < candidates.size(); l++) {
+                        std::vector<cv::Point2f> pts = { candidates[i], candidates[j], candidates[k], candidates[l] };
 
-                    double area = 0.5 * std::abs(p1.x * (p2.y - p3.y) + p2.x * (p3.y - p1.y) + p3.x * (p1.y - p2.y));
-                    if (area > maxTriArea) {
-                        maxTriArea = area;
-                        best3 = { p1, p2, p3 };
+                        // è®¡ç®—è´¨å¿ƒè¿›è¡Œæ’åº
+                        cv::Point2f center(0, 0);
+                        for (const auto& p : pts) center += p;
+                        center.x /= 4.0f; center.y /= 4.0f;
+
+                        std::vector<cv::Point2f> sorted(4, cv::Point2f(-1, -1));
+                        int valid = 0;
+                        for (const auto& p : pts) {
+                            if (p.x < center.x && p.y < center.y) { sorted[0] = p; valid++; }      // TL
+                            else if (p.x >= center.x && p.y < center.y) { sorted[1] = p; valid++; } // TR
+                            else if (p.x >= center.x && p.y >= center.y) { sorted[2] = p; valid++; }// BR
+                            else if (p.x < center.x && p.y >= center.y) { sorted[3] = p; valid++; } // BL
+                        }
+
+                        if (valid == 4) {
+                            // ä½¿ç”¨å¯¹è§’çº¿å‰ä¹˜è®¡ç®—å››è¾¹å½¢é¢ç§¯
+                            double area = 0.5 * std::abs((sorted[2].x - sorted[0].x) * (sorted[3].y - sorted[1].y) -
+                                (sorted[3].x - sorted[1].x) * (sorted[2].y - sorted[0].y));
+                            if (area > maxQuadArea) {
+                                maxQuadArea = area;
+                                best4 = sorted;
+                            }
+                        }
                     }
                 }
             }
         }
-        return best3;
+        return best4;
         };
 
     cv::Mat binImg;
-    std::vector<cv::Point2f> best3;
+    std::vector<cv::Point2f> best4;
 
-    // ²ßÂÔ1£ºOtsu
+    // ç­–ç•¥1ï¼šOtsu
     cv::threshold(gray, binImg, 0, 255, cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
-    best3 = attemptStrategy(binImg);
+    best4 = attemptStrategy(binImg);
 
-    // ²ßÂÔ2£º¸ßË¹×ÔÊÊÓ¦ (Ó¦¶ÔÑÏÖØ·´¹â)
-    if (best3.empty()) {
+    // ç­–ç•¥2ï¼šé«˜æ–¯è‡ªé€‚åº” (åº”å¯¹ä¸¥é‡åå…‰ï¼Œæ‰‹æœºæ‹æ‘„ä¸»è¦é è¿™ä¸ª)
+    if (best4.empty()) {
         cv::Mat blurred;
         cv::GaussianBlur(gray, blurred, cv::Size(5, 5), 0);
         cv::adaptiveThreshold(blurred, binImg, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C, cv::THRESH_BINARY_INV, 51, 15);
-        best3 = attemptStrategy(binImg);
+        best4 = attemptStrategy(binImg);
     }
 
-    if (best3.size() != 3) return false;
+    if (best4.size() != 4) return false;
 
-    // ·ÖÅä TL, TR, BL
-    cv::Point2f tl(0, 0), tr(0, 0), bl(0, 0);
-    float minSum = 1e9;
-    for (const auto& pt : best3) {
-        if (pt.x + pt.y < minSum) { minSum = pt.x + pt.y; tl = pt; }
-    }
-    std::vector<cv::Point2f> rem;
-    for (const auto& pt : best3) {
-        if (pt != tl) rem.push_back(pt);
-    }
-    if (rem[0].x > rem[1].x) { tr = rem[0]; bl = rem[1]; }
-    else { tr = rem[1]; bl = rem[0]; }
-
-    cv::Point2f br = cv::Point2f(tr.x + bl.x - tl.x, tr.y + bl.y - tl.y);
-    std::vector<cv::Point2f> srcPoints = { tl, tr, br, bl };
-
-    // ÖĞĞÄÆ«ÒÆÁ¿Îª 4.5 ¸ö´óÍø¸ñ
+    // best4 å·²ç»ç»è¿‡ sorted å¤„ç†ï¼šTL, TR, BR, BL
     float centerOffset = 4.5f * FrameConfig::CELL_SIZE;
     float maxDim = static_cast<float>(FrameConfig::IMAGE_WIDTH);
     std::vector<cv::Point2f> dstPoints = {
-        cv::Point2f(centerOffset, centerOffset),
-        cv::Point2f(maxDim - centerOffset, centerOffset),
-        cv::Point2f(maxDim - centerOffset, maxDim - centerOffset),
-        cv::Point2f(centerOffset, maxDim - centerOffset)
+        cv::Point2f(centerOffset, centerOffset),                     // TL
+        cv::Point2f(maxDim - centerOffset, centerOffset),            // TR
+        cv::Point2f(maxDim - centerOffset, maxDim - centerOffset),   // BR
+        cv::Point2f(centerOffset, maxDim - centerOffset)             // BL
     };
 
-    cv::Mat perspectiveMatrix = cv::getPerspectiveTransform(srcPoints, dstPoints);
+    // [æ ¸å¿ƒä¼˜åŒ–] ä½¿ç”¨ 4 ä¸ªçœŸå®ç‚¹è¿›è¡Œä¸¥æ ¼çš„ 3D é€è§†å˜æ¢
+    cv::Mat perspectiveMatrix = cv::getPerspectiveTransform(best4, dstPoints);
     cv::warpPerspective(gray, outputWarped, perspectiveMatrix, cv::Size(FrameConfig::IMAGE_WIDTH, FrameConfig::IMAGE_HEIGHT));
 
     return true;
@@ -123,9 +124,9 @@ bool Img_Decoder::alignAndWarpImage(const cv::Mat& inputImage, cv::Mat& outputWa
 bool Img_Decoder::extractBitsFromGrid(const cv::Mat& warpedGray, std::vector<bool>& allBits, bool debugMode) {
     int cs = FrameConfig::CELL_SIZE;
     int halfCell = cs / 2;
-    // È¡Ñù¿òÀ©´ó£¬ÀûÓÃ´óÍø¸ñµÄÓÅÊÆ£¡
     int safeMargin = cs / 4;
 
+    // è¾…åŠ©å‡½æ•°ï¼šåœ¨ä¸€ä¸ªå°åŒºåŸŸå†…é‡‡æ ·å¹³å‡äº®åº¦
     auto sampleBrightness = [&](double cx, double cy) {
         cv::Rect roi(static_cast<int>(cx) - safeMargin, static_cast<int>(cy) - safeMargin, safeMargin * 2 + 1, safeMargin * 2 + 1);
         roi &= cv::Rect(0, 0, warpedGray.cols, warpedGray.rows);
@@ -133,17 +134,23 @@ bool Img_Decoder::extractBitsFromGrid(const cv::Mat& warpedGray, std::vector<boo
         return cv::mean(warpedGray(roi))[0];
         };
 
-    double avgBlack = (sampleBrightness(4.5 * cs, 4.5 * cs) + sampleBrightness(warpedGray.cols - 4.5 * cs, 4.5 * cs) + sampleBrightness(4.5 * cs, warpedGray.rows - 4.5 * cs)) / 3.0;
-    double avgWhite = (sampleBrightness(4.5 * cs, 2.5 * cs) + sampleBrightness(warpedGray.cols - 4.5 * cs, 2.5 * cs) + sampleBrightness(4.5 * cs, warpedGray.rows - 2.5 * cs)) / 3.0;
+    // æ ¸å¿ƒä¼˜åŒ–ï¼šåœ¨ 4 ä¸ªè§’çš„å®šä½æ ‡å¿—å¤„ï¼Œåˆ†åˆ«é‡‡æ ·å±€éƒ¨çš„â€œé»‘å—â€å’Œâ€œç™½ç¯â€äº®åº¦
+    // å·¦ä¸Šè§’ (TL)
+    double TL_t = (sampleBrightness(4.5 * cs, 4.5 * cs) + sampleBrightness(4.5 * cs, 2.5 * cs)) / 2.0;
+    // å³ä¸Šè§’ (TR)
+    double TR_t = (sampleBrightness(warpedGray.cols - 4.5 * cs, 4.5 * cs) + sampleBrightness(warpedGray.cols - 4.5 * cs, 2.5 * cs)) / 2.0;
+    // å·¦ä¸‹è§’ (BL)
+    double BL_t = (sampleBrightness(4.5 * cs, warpedGray.rows - 4.5 * cs) + sampleBrightness(4.5 * cs, warpedGray.rows - 2.5 * cs)) / 2.0;
+    // å³ä¸‹è§’ (BR)
+    double BR_t = (sampleBrightness(warpedGray.cols - 4.5 * cs, warpedGray.rows - 4.5 * cs) + sampleBrightness(warpedGray.cols - 4.5 * cs, warpedGray.rows - 2.5 * cs)) / 2.0;
 
-    double dynamicThresh = (avgBlack + avgWhite) / 2.0;
-    if (std::abs(avgWhite - avgBlack) < 20) dynamicThresh = 128.0;
-
+    // è½»å¾®é«˜æ–¯æ¨¡ç³Šå»å™ª
     cv::Mat warpedSmooth;
     cv::GaussianBlur(warpedGray, warpedSmooth, cv::Size(3, 3), 0);
 
     for (int row = 0; row < FrameConfig::GRID_ROWS; row++) {
         for (int col = 0; col < FrameConfig::GRID_COLS; col++) {
+            // è·³è¿‡ 4 ä¸ªè§’çš„å®šä½æ ‡è®°
             if (isInsideMarker(col, row, FrameConfig::GRID_COLS, FrameConfig::GRID_ROWS)) continue;
 
             int cx = col * cs + halfCell;
@@ -151,15 +158,30 @@ bool Img_Decoder::extractBitsFromGrid(const cv::Mat& warpedGray, std::vector<boo
 
             cv::Rect roi(cx - safeMargin, cy - safeMargin, safeMargin * 2 + 1, safeMargin * 2 + 1);
             roi &= cv::Rect(0, 0, warpedSmooth.cols, warpedSmooth.rows);
-            if (roi.width <= 0 || roi.height <= 0) continue;
+            if (roi.width <= 0 || roi.height <= 0) {
+                allBits.push_back(false);
+                continue;
+            }
 
             cv::Scalar meanVal = cv::mean(warpedSmooth(roi));
+
+            // æ ¸å¿ƒä¼˜åŒ–ï¼šä½¿ç”¨åŒçº¿æ€§æ’å€¼ï¼Œä¸ºå½“å‰ç½‘æ ¼è®¡ç®—ä¸“å±çš„åŠ¨æ€é˜ˆå€¼
+            // è¿™èƒ½å¤Ÿå®Œç¾æŠµæ¶ˆæ‰‹æœºæ‹æ‘„æ—¶å…‰ç…§ä¸å‡åŒ€ï¼ˆå¦‚å·¦è¾¹äº®ã€å³è¾¹æš—ï¼‰çš„é—®é¢˜ï¼Œå¯¹çº¯æ•°å­—è§†é¢‘ä¹Ÿç»å¯¹ç²¾å‡†
+            double x_ratio = static_cast<double>(cx) / warpedGray.cols;
+            double y_ratio = static_cast<double>(cy) / warpedGray.rows;
+
+            double top_thresh = TL_t * (1.0 - x_ratio) + TR_t * x_ratio;
+            double bottom_thresh = BL_t * (1.0 - x_ratio) + BR_t * x_ratio;
+            double dynamicThresh = top_thresh * (1.0 - y_ratio) + bottom_thresh * y_ratio;
+
+            // äº®åº¦ä½äºåŠ¨æ€é˜ˆå€¼ä¸ºé»‘ (1)ï¼Œé«˜äºä¸ºç™½ (0)
             bool bit = (meanVal[0] < dynamicThresh);
             allBits.push_back(bit);
         }
     }
     return true;
 }
+    
 
 bool Img_Decoder::decodeImage(const cv::Mat& inputImage, std::vector<bool>& outDataBits, uint16_t& outFrameNum, bool debugMode) {
     outDataBits.clear();
