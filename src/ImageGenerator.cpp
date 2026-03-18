@@ -8,6 +8,7 @@ bool ImageGenerator::isInsideMarker(int col, int row, int gridCols, int gridRows
     if (col < mb && row < mb) return true;
     if (col >= gridCols - mb && row < mb) return true;
     if (col < mb && row >= gridRows - mb) return true;
+    if (col >= gridCols - mb && row >= gridRows - mb) return true; // [æ–°å¢] å±è”½å³ä¸‹è§’
     return false;
 }
 
@@ -24,12 +25,13 @@ void ImageGenerator::drawHuiMarker(cv::Mat& image, int startGridCol, int startGr
 
 cv::Mat ImageGenerator::generateFrameImage(uint16_t frameNumber, const std::vector<bool>& dataBits, uint16_t crc) {
     cv::Mat image(FrameConfig::IMAGE_HEIGHT, FrameConfig::IMAGE_WIDTH, CV_8UC3);
-    image.setTo(cv::Scalar(255, 255, 255)); // ´¿°×µ×É«£¬ĞÎ³É±£»¤È¦
+    image.setTo(cv::Scalar(255, 255, 255)); // çº¯ç™½åº•è‰²ï¼Œå½¢æˆä¿æŠ¤åœˆ
 
-    // ÔÚ 9x9 µÄ±£ÁôÇøÖĞ£¬Æ«ÒÆ(1,1)»­7x7µÄ±ê¼Ç£¬È·±£ËÄÖÜ¶¼ÓĞ1¸ñ¾ø¶Ô°×±ß
-    drawHuiMarker(image, 1, 1, FrameConfig::CELL_SIZE);
-    drawHuiMarker(image, FrameConfig::GRID_COLS - 8, 1, FrameConfig::CELL_SIZE);
-    drawHuiMarker(image, 1, FrameConfig::GRID_ROWS - 8, FrameConfig::CELL_SIZE);
+    // ç»˜åˆ¶ 4 ä¸ªè§’çš„å®šä½æ ‡è®° [ä¿®æ”¹å¤„]
+    drawHuiMarker(image, 1, 1, FrameConfig::CELL_SIZE); // å·¦ä¸Š (TL)
+    drawHuiMarker(image, FrameConfig::GRID_COLS - 8, 1, FrameConfig::CELL_SIZE); // å³ä¸Š (TR)
+    drawHuiMarker(image, 1, FrameConfig::GRID_ROWS - 8, FrameConfig::CELL_SIZE); // å·¦ä¸‹ (BL)
+    drawHuiMarker(image, FrameConfig::GRID_COLS - 8, FrameConfig::GRID_ROWS - 8, FrameConfig::CELL_SIZE); // å³ä¸‹ (BR)
 
     std::vector<bool> payloadBits;
     for (int i = 15; i >= 0; i--) payloadBits.push_back((frameNumber >> i) & 1);
